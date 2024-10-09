@@ -1,4 +1,3 @@
-import argparse
 import time
 from typing import List
 
@@ -8,7 +7,10 @@ from picamera2 import CompletedRequest, MappedArray, Picamera2
 from picamera2.devices.imx500 import IMX500
 
 last_detections = []
-LABELS = None
+
+with open("../../../assets/imagenet_labels.txt", "r") as f:
+    labels = f.read().splitlines()
+    labels = labels[1:]
 
 
 class Classification:
@@ -16,15 +18,6 @@ class Classification:
         """Create a Classification object, recording the idx and score."""
         self.idx = idx
         self.score = score
-
-
-def get_label(request: CompletedRequest, idx: int) -> str:
-    """Retrieve the label corresponding to the classification index."""
-    global LABELS
-    if LABELS is None:
-        with open(args.labels, "r") as f:
-            LABELS = f.read().splitlines()
-    return LABELS[idx]
 
 
 def parse_and_draw_classification_results(request: CompletedRequest):
@@ -39,59 +32,40 @@ def parse_classification_results(request: CompletedRequest) -> List[Classificati
     np_outputs = imx500.get_outputs(request.get_metadata())
     if np_outputs is None:
         return last_detections
-    np_output = np.squeeze(np_outputs)
-    last_detections = [
-        Classification(index, np_output[index]) for index in np.argsort(-np_output)
-    ]  # sort all indices by their scores
+    np_output = np_outputs[0]
+    top_indices = np.argpartition(-np_output, 3)[:3]  # Get top 3 indices with the highest scores
+    top_indices = top_indices[np.argsort(-np_output[top_indices])]  # Sort the top 3 indices by their scores
+    last_detections = [Classification(index, np_output[index]) for index in top_indices]
     return last_detections
 
 
-def draw_classification_results(
-    request: CompletedRequest, results: List[Classification], stream: str = "main"
-):
+def draw_classification_results(request: CompletedRequest, results: List[Classification], stream: str = "main"):
     """Draw the classification results for this request onto the ISP output."""
     with MappedArray(request, stream) as m:
-        text_left, text_top = 0, 0
+        # drawing roi box
+        b_x, b_y, b_w, b_h  = imx500.get_roi_scaled(request)
+        cv2.putText(m.array, "ROI", (b_x + 5, b_y + 15), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, (255, 0, 0), 1)
+        cv2.rectangle(m.array, (b_x, b_y), (b_x + b_w, b_y + b_h), (255, 0, 0, 0))
+        text_left, text_top = b_x, b_y + 20
         # drawing labels (in the ROI box if exist)
         for index, result in enumerate(results):
-            label = get_label(request, idx=result.idx)
+            label = labels[result.idx]
             text = f"{label}: {result.score:.3f}"
-            cv2.putText(
-                m.array,
-                text,
-                (text_left + 5, text_top + 15 + index * 20),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 0, 255),
-                1,
-            )
-
-
-def get_args():
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, required=True, help="Path of the model")
-    parser.add_argument("--fps", type=int, default=15, help="Frames per second")
-    parser.add_argument(
-        "--labels",
-        type=str,
-        default="assets/labels.txt",
-        help="Path to the labels file",
-    )
-    return parser.parse_args()
+            cv2.putText(m.array, text, (text_left + 5, text_top + 15 + index * 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
 
 if __name__ == "__main__":
-    args = get_args()
-
     # This must be called before instantiation of Picamera2
-    imx500 = IMX500(args.model)
+    imx500 = IMX500("network.rpk")
 
     picam2 = Picamera2()
-    config = picam2.create_preview_configuration(controls={"FrameRate": args.fps}, buffer_count=28)
+    config = picam2.create_preview_configuration(controls={"FrameRate": 30}, buffer_count=28)
 
     imx500.show_network_fw_progress_bar()
     picam2.start(config, show_preview=True)
+    imx500.set_auto_aspect_ratio()
     # Register the callback to parse and draw classification results
     picam2.pre_callback = parse_and_draw_classification_results
 

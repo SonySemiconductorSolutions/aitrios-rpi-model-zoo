@@ -60,7 +60,7 @@ def create_mask(request: CompletedRequest) -> tuple[float, np.ndarray]:
 
     mask = np.zeros(pixel_score.shape + (4,), dtype=np.uint8)
     mask[pixel_score >= pixel_thresh, 0] = 255
-    mask[:, :, 3] = 150
+    mask[pixel_score >= pixel_thresh, 3] = 150
     mask = cv2.resize(mask, WINDOW_SIZE, interpolation=cv2.INTER_NEAREST)
     return image_score, mask
 
@@ -140,7 +140,7 @@ def create_setting_window():
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, required=True, help="Path of the model")
-    parser.add_argument("--fps", type=int, default=30, help="Frames per second")
+    parser.add_argument("--fps", type=int, default=15, help="Frames per second")
     parser.add_argument(
         "--config",
         type=str,
@@ -159,6 +159,8 @@ if __name__ == "__main__":
 
     picam2 = Picamera2()
     config = picam2.create_preview_configuration(controls={"FrameRate": args.fps}, buffer_count=28)
+
+    imx500.show_network_fw_progress_bar()
     picam2.start(config, show_preview=True)
     setting_window = create_setting_window()
 
